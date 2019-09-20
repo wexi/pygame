@@ -1578,6 +1578,68 @@ pg_event_post(PyObject *self, PyObject *args)
     Py_RETURN_NONE;
 }
 
+typedef struct {
+    SDL_Event event;
+    SDL_Thread* thread;
+} apostData;
+
+static int SDLCALL apost(apostData* data)
+{
+    SDL_Thread* pthread = data->thread; /* previous apost() thread */
+
+    if (pthread != NULL && SDL_GetThreadID(pthread) != SDL_ThreadID())
+	SDL_WaitThread (pthread, NULL);
+    SDL_PushEvent (&data->event);
+    SDL_free (data);
+    return 0;    
+}
+
+static PyObject *
+pg_event_apost(PyObject *self, PyObject *args)
+{
+  /* apost() is an asynchronous event posting method that calls
+     SDL_PushEvent from a newly created thread. 
+  */
+  
+    pgEventObject *e;
+    int isblocked = 0;
+    apostData* data;
+    static SDL_Thread* thread = NULL;
+
+    if (!PyArg_ParseTuple(args, "O!", &pgEvent_Type, &e))
+        return NULL;
+
+    VIDEO_INIT_CHECK();
+
+    /* see if the event is blocked before posting it. */
+    isblocked = SDL_EventState(e->type, SDL_QUERY) == SDL_IGNORE;
+    if (isblocked) {
+        /* event is blocked, so we do not post it. */
+        Py_RETURN_NONE;
+    }
+
+    data = (apostData *)SDL_malloc (sizeof(apostData));
+    if ( data == NULL ) {
+        SDL_OutOfMemory();
+        return RAISE (pgExc_SDLError, SDL_GetError());
+    }
+    if (PyEvent_FillUserEvent (e, &data->event)) {
+	SDL_free (data);
+	return NULL;
+    }
+    data->thread = thread;
+
+    Py_BEGIN_ALLOW_THREADS;
+    thread = SDL_CreateThread (apost, data);
+    Py_END_ALLOW_THREADS;
+    if ( thread == NULL ) {
+	SDL_free (data);
+        return RAISE (pgExc_SDLError, SDL_GetError());
+    }
+
+    Py_RETURN_NONE;
+}
+
 static int
 _pg_check_event_in_range(int evt)
 {
